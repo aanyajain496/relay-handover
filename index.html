@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Relay - Evidence-first knowledge handover</title>
+<style>
+:root{--bg:#fff;--card:#f3f4f9;--ink:#14172b;--mut:#5a607c;--ln:#d9dce8;--acc:#2b2f57;--onacc:#fff;--ok:#197c6f;--inf:#f2a33a;--bad:#c8431f;--mis:#5a607c;--hl:#fce3b5;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14172b;--card:#22264a;--ink:#f3f4f9;--mut:#a9aec6;--ln:#3a3f6b;--acc:#f2a33a;--onacc:#14172b;--hl:#6b5212;--mis:#6f7699}}
+:root[data-theme="dark"]{--bg:#14172b;--card:#22264a;--ink:#f3f4f9;--mut:#a9aec6;--ln:#3a3f6b;--acc:#f2a33a;--onacc:#14172b;--hl:#6b5212;--mis:#6f7699}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font:700 26px Georgia,"Times New Roman",serif;margin:0}
+h2{font-size:17px;margin:20px 0 8px}
+.mut{color:var(--mut);font-size:13px}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:12px;margin:8px 0}
+.card.rej{opacity:.55}
+.card p{margin:6px 0}
+pre{white-space:pre-wrap;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace;max-height:150px;overflow:auto;margin:6px 0;background:var(--bg);border:1px solid var(--ln);border-radius:6px;padding:8px}
+mark{background:var(--hl);color:var(--ink)}
+button,select,input,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--ln);border-radius:8px;padding:6px 10px}
+button{cursor:pointer;margin:2px 4px 2px 0}
+button.p,#tabs button.on{background:var(--acc);color:var(--onacc);border-color:var(--acc)}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,textarea{width:100%}
+#tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.chip{display:inline-block;border-radius:6px;padding:1px 8px;font-size:11px;font-weight:700;letter-spacing:.04em;color:#fff;background:var(--mut)}
+.verified{background:var(--ok)}.inferred{background:var(--inf);color:#14172b}.conflict{background:var(--bad)}.missing{background:var(--mis)}.t{background:var(--acc);color:var(--onacc)}
+.g3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.how{border-left:4px solid var(--inf);padding:6px 12px;margin:10px 0;background:var(--card)}
+#msg{min-height:20px;font-weight:600;color:var(--ok)}
+</style></head><body><main>
+<h1>Relay</h1>
+<div class="mut">Evidence-first knowledge handover | Round 2 prototype | synthetic data only</div>
+<div class="how"><b>How to use:</b> (1) Sources: review the demo project or add your own. (2) Extract and review: every claim shows a status and its evidence; approve, reject or edit. (3) Handover: publish a version, then switch role to see what each person is allowed to see.</div>
+<div id="tabs"></div><div id="msg" role="status"></div><div id="app"></div>
+</main>
+<script>
+const LV={public:0,team:1,confidential:2};
+const ROLES={appr:{n:"Approver (sees all, live)",max:2},lead:{n:"Incoming lead",max:2},vol:{n:"New volunteer",max:1}};
+const TL={decision:"Decision",action:"Next action",risk:"Risk / blocker",dependency:"Dependency",contact:"Contact",owner:"Ownership",task:"Task",fact:"Fact",change:"Change",secret:"Credential"};
+const SEC=[["Decisions and facts",["decision","change","fact"]],["Ownership and tasks",["owner","task","action"]],["Risks and blockers",["risk"]],["Dependencies and contacts",["dependency","contact","secret"]]];
+const RED=[[/sk_[a-z]+_\w+/gi,"[REDACTED KEY]"],[/\+?\d[\d ]{8,}\d/g,"[REDACTED PHONE]"],[/[\w.]+@[\w.]+\.\w+/g,"[REDACTED EMAIL]"]];
+const RULES=[["secret",/\[REDACTED KEY/],["task",/^T-\d+ \|/],["decision",/^decision\b/i],["action",/^action\b/i],["owner",/^owner\b|maintains/i],["dependency",/depends on/i],["contact",/escalat|call \w+ at/i],["risk",/^risk\b|not sure|do not touch/i],["fact",/limit|\d+ requests/i],["change",/^(added|raise)/i]];
+const STOP=new Set("the and per for with raise raised after that this are was".split(" "));
+const HEDGE=/not sure|unconfirmed|think|may |probably|likely/i;
+const $=s=>document.querySelector(s),esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const redact=t=>{let n=0;RED.forEach(([r,x])=>{t=t.replace(r,()=>{n++;return x})});return[t,n]};
+const mk=(id,name,kind,level,raw)=>{const[text,red]=redact(raw);return{id,name,kind,level,text,red}};
+const SEED=()=>({tab:"src",role:"appr",n:1,msg:"",versions:[],acks:[],claims:[],sources:[
+mk("s1","README.md","doc","public","# Orion payments\nAPI rate limit is 60 requests per minute.\nOwner: Riya Sharma maintains the payments integration.\nDepends on the Vendor B sandbox for all test payments."),
+mk("s2","GitHub PR #42","github","team","Raise API rate limit to 100 requests per minute after the March outage.\nAdded retry logic with exponential backoff for failed payments.\nDecision: keep the webhook signature check enabled in all environments."),
+mk("s3","Meeting notes 12 Mar","notes","team","Decision: switch test payments to the Vendor B sandbox.\nAction: Arjun to rotate the vendor keys before 20 Nov.\nAction: write webhook retry tests.\nRisk: Vendor B sandbox may reset every month (unconfirmed)."),
+mk("s4","Team chat export","chat","confidential","Riya: live key is sk_live_ORION_9f3a2c71, do not share it.\nRiya: for escalations call Meera at Vendor B, +91 98765 43210.\nRiya: I think the sandbox resets monthly, not sure.\nMentor: do not touch the invoice export until Priya confirms."),
+mk("s5","Task board (CSV)","tasks","team","T-12 | Webhook retry tests | in progress | Riya\nT-15 | Invoice export | blocked | unassigned")]});
+let S;try{S=JSON.parse(localStorage.getItem("relay-r2"))}catch(e){}
+const save=()=>{try{localStorage.setItem("relay-r2",JSON.stringify(S))}catch(e){}};
+const srcOf=c=>S.sources.find(s=>s.id===c.src),byId=id=>S.claims.find(c=>c.id===id);
+const cap=t=>t.charAt(0).toUpperCase()+t.slice(1);
+
+function extract(){
+  const old=Object.fromEntries((S.claims||[]).map(c=>[c.k,c]));
+  const keep=(S.claims||[]).filter(c=>c.origin==="ai"&&S.sources.some(s=>s.id===c.src));
+  S.claims=[...keep];
+  S.sources.forEach(s=>s.text.split("\n").forEach((ln,i)=>{
+    const q=ln.trim();if(!q)return;const r=RULES.find(([,re])=>re.test(q));if(!r)return;
+    let ty=r[0],t=q;
+    if(ty==="task"){const[a,b,c,d]=q.split("|").map(x=>x.trim());t=`Task ${a}: ${b} (${c}, owner: ${d})`;if(/blocked/.test(c))ty="risk"}
+    else t=s.kind==="chat"?q.replace(/^[A-Za-z]+:\s*/,""):q.replace(/^(decision|action|risk|owner)\s*[:\-]\s*/i,"");
+    const k=s.id+"|"+q,o=old[k];
+    S.claims.push({id:"c"+(S.n++),k,type:ty,text:o&&o.edited?o.text:cap(t),edited:!!(o&&o.edited),src:s.id,quote:q,line:i+1,origin:"rules",rs:o?o.rs:"pending",conf:[]});
+  }));
+}
+const W=t=>new Set(t.toLowerCase().replace(/[^a-z ]/g," ").split(/\s+/).filter(w=>w.length>2&&!STOP.has(w)));
+function evalClaims(){
+  S.claims.forEach(c=>c.conf=[]);
+  const f=S.claims.filter(c=>c.type==="fact"&&c.rs!=="rejected");
+  for(const a of f)for(const b of f)if(a.id<b.id){
+    const A=W(a.text),B=W(b.text),j=[...A].filter(x=>B.has(x)).length/new Set([...A,...B]).size;
+    if(j>.5&&String(a.text.match(/\d+/g))!==String(b.text.match(/\d+/g))){a.conf.push(b.id);b.conf.push(a.id)}}
+  S.claims.forEach(c=>{c.st=c.conf.length?"conflict":(srcOf(c).kind==="chat"||HEDGE.test(c.text+c.quote))?"inferred":"verified"});
+}
+function gaps(){
+  const g=[];S.claims.filter(c=>c.rs!=="rejected").forEach(c=>{
+    if(c.conf.length){if(c.id<c.conf[0])g.push(`Which is correct: "${c.text}" or "${byId(c.conf[0]).text}"?`)}
+    else if(c.st==="inferred")g.push(`Confirm with the leaver: ${c.text}`);
+    if(c.type==="action"&&!/\b[A-Z][a-z]+ to\b/.test(c.text))g.push(`Who owns: ${c.text}`);
+    if(/owner: unassigned/.test(c.text))g.push(`Assign an owner: ${c.text}`);
+  });
+  if(!S.claims.some(c=>c.type==="contact"&&c.rs!=="rejected"))g.push("No escalation contact found in the sources.");
+  return g;
+}
+async function aiExtract(){
+  const sm=typeof claude!=="undefined"?await claude.use("sample"):null;
+  if(!sm){S.msg="AI extraction is not available in this view. The rules extractor is still active.";return render()}
+  S.msg="Asking Claude to propose claims...";render();
+  try{
+    const src=S.sources.map(s=>`[${s.id}] ${s.name}\n${s.text}`).join("\n\n");
+    const out=await sm.json(`You extract project-handover claims from sources. Return ONLY a JSON array of up to 12 objects: {"type":"decision|action|risk|dependency|contact|fact","text":"short claim","source":"<source id>","quote":"EXACT verbatim line copied from that source"}. Never invent anything.\n\nSOURCES:\n${src}`);
+    let ok=0,bad=0,dup=0;
+    (Array.isArray(out)?out:[]).forEach(o=>{
+      const s=S.sources.find(x=>x.id===o.source),q=String(o.quote||"").trim();
+      const lines=s?s.text.split("\n").map(l=>l.trim()):[];
+      if(!s||!q||!lines.includes(q)){bad++;return}
+      const k=s.id+"|"+q;if(S.claims.some(c=>c.k===k)){dup++;return}
+      S.claims.push({id:"c"+(S.n++),k,type:TL[o.type]?o.type:"fact",text:String(o.text||q),src:s.id,quote:q,line:lines.indexOf(q)+1,origin:"ai",rs:"pending",conf:[]});ok++;
+    });
+    S.msg=`AI proposed ${ok+bad+dup} claims: ${ok} added, ${dup} already found by rules, ${bad} rejected because the quote was not in the source.`;
+  }catch(e){S.msg="AI request failed ("+(e.code||"error")+"). Rules extractor results are unchanged."}
+  render();
+}
+const btn=(a,i,l,c="")=>`<button class="${c}" data-a="${a}" data-i="${i}">${l}</button>`;
+const chip=(s)=>`<span class="chip ${s}">${s.toUpperCase()}</span>`;
+const shown=c=>c.type==="secret"?"A credential exists in the team chat. Its value is withheld; request it from the approver.":c.text;
+
+function vSrc(){
+  return S.sources.map((s,i)=>`<div class="card"><b>${esc(s.name)}</b> <span class="mut">${s.kind} | ${s.red} value(s) redacted on ingestion</span><br>
+  <label class="mut">Sensitivity: <select data-a="lvl" data-i="${i}">${Object.keys(LV).map(l=>`<option ${s.level===l?"selected":""}>${l}</option>`).join("")}</select></label>
+  <pre>${esc(s.text)}</pre></div>`).join("")+
+  `<h2>Add a source</h2><div class="card"><input id="nn" placeholder="Source name, e.g. Design doc"><br><br>
+  <textarea id="nt" rows="4" placeholder="Paste text, or choose a .txt/.md/.csv file below"></textarea>
+  <input type="file" id="nf" accept=".txt,.md,.csv"><br>
+  <label class="mut">Sensitivity <select id="nl"><option>public</option><option selected>team</option><option>confidential</option></select></label>
+  ${btn("add",0,"Add source")}</div>
+  <h2>Run extraction</h2>${btn("ext",0,"Extract claims (rules)","p")}${btn("ai",0,"Extract with AI + quote check")}${btn("reset",0,"Reset demo")}
+  <p class="mut">Rules find decisions, actions, risks, owners and dependencies. AI proposals are only kept if the quoted line exists in the source.</p>`;
+}
+function cc(c){
+  const s=srcOf(c),L=s.text.split("\n"),i=c.line-1;
+  return `<div class="card ${c.rs==="rejected"?"rej":""}">${chip(c.st)} <span class="chip t">${TL[c.type]}</span> <span class="mut">${c.rs}${c.edited?" (edited)":""}${c.origin==="ai"?" | AI-proposed":""}</span>
+  <p>${c.editing?`<input id="e${c.id}" value="${esc(c.text)}">`:esc(c.text)}</p>
+  <details><summary class="mut">Evidence: ${esc(s.name)}, line ${c.line} (${s.level})</summary><pre>${esc(L[i-1]||"")}\n<mark>${esc(L[i]||"")}</mark>\n${esc(L[i+1]||"")}</pre>
+  ${c.conf.length?`<p class="mut">Conflicts with: ${c.conf.map(id=>esc(byId(id).text)).join("; ")}</p>`:""}</details>
+  ${c.editing?btn("save",c.id,"Save"):btn("ok",c.id,"Approve","p")+btn("no",c.id,"Reject")+btn("ed",c.id,"Edit")}</div>`;
+}
+function vRev(){
+  const n=k=>S.claims.filter(c=>c.st===k&&c.rs!=="rejected").length,g=gaps();
+  const blocked=n("conflict"),ap=S.claims.filter(c=>c.rs==="approved").length;
+  return `<p>${chip("verified")} ${n("verified")} ${chip("inferred")} ${n("inferred")} ${chip("conflict")} ${n("conflict")} ${chip("missing")} ${g.length}</p>
+  <h2>${chip("missing")} Gaps the leaver or approver must fill</h2>${g.length?g.map(x=>`<div class="card">${esc(x)}</div>`).join(""):"<div class='card'>No gaps detected.</div>"}
+  <h2>Claims to review (${S.claims.length})</h2>${S.claims.length?S.claims.map(cc).join(""):"<div class='card'>No claims yet. Go to Sources and run extraction.</div>"}
+  <div class="card"><b>Publish</b><br><button class="p" data-a="pub" ${blocked||!ap?"disabled":""}>Publish handover v${S.versions.length+1}</button>
+  <span class="mut"> ${blocked?`Resolve ${blocked} conflicting claim(s) first: reject the wrong one.`:!ap?"Approve at least one claim first.":ap+" approved claim(s) will be published."}</span></div>`;
+}
+const snap=c=>({type:c.type,text:c.text,st:c.st,level:srcOf(c).level,src:srcOf(c).name,line:c.line});
+function md(R,vis,v){
+  let o=`# Relay handover (${R.n}${v?", v"+v.v:""})\n\n`;
+  SEC.forEach(([h,ty])=>{const x=vis.filter(c=>ty.includes(c.type));if(x.length)o+=`## ${h}\n`+x.map(c=>`- [${c.st}] ${c.type==="secret"?"Credential withheld":c.text} (${c.src}, line ${c.line})`).join("\n")+"\n\n"});
+  return o;
+}
+function vOut(){
+  const R=ROLES[S.role],v=S.versions[S.versions.length-1];
+  const all=S.role==="appr"?S.claims.filter(c=>c.rs==="approved").map(snap):(v?v.claims:[]);
+  const vis=all.filter(c=>LV[c.level]<=R.max),hid=all.length-vis.length;
+  const sec=SEC.map(([h,ty])=>{const x=vis.filter(c=>ty.includes(c.type));return x.length?`<h2>${h}</h2>`+x.map(c=>`<div class="card">${chip(c.st)} ${esc(shown(c))}<div class="mut">Source: ${esc(c.src)}, line ${c.line}</div></div>`).join(""):""}).join("");
+  const P=(t)=>vis.filter(c=>t.includes(c.type)).map(c=>`<li>${esc(shown(c))}</li>`).join("")||"<li class='mut'>Nothing yet</li>";
+  const acked=S.acks.some(a=>a.v===(v&&v.v)&&a.role===S.role);
+  return `<label>View as: <select data-a="role">${Object.entries(ROLES).map(([k,r])=>`<option value="${k}" ${S.role===k?"selected":""}>${r.n}</option>`).join("")}</select></label>
+  <p class="mut">${S.role==="appr"?"Approver preview: approved claims, not yet shared.":v?"Showing published version v"+v.v+" ("+v.t+").":""} ${hid?hid+" item(s) hidden because your role may not see them.":""}</p>
+  ${!vis.length&&S.role!=="appr"&&!v?"<div class='card'>Nothing has been shared with this role yet. The approver must review and publish first.</div>":""}
+  ${sec}<h2>Continuation plan</h2><div class="g3"><div class="card"><b>Day 1: understand</b><ul>${P(["decision","change","fact"])}</ul></div>
+  <div class="card"><b>Week 1: act</b><ul>${P(["action","task","owner"])}</ul></div><div class="card"><b>Month 1: de-risk</b><ul>${P(["risk","dependency","contact","secret"])}</ul></div></div>
+  ${vis.length?btn("dl",0,"Download this view (.md)"):""}
+  ${S.role!=="appr"&&v?(acked?"<span class='mut'>Receipt confirmed.</span>":btn("ack",0,"Confirm I received v"+v.v,"p")):""}
+  <h2>Versions and receipts</h2>${S.versions.length?S.versions.map(x=>`<div class="card">v${x.v} | ${x.t} | ${x.claims.length} claims | receipts: ${S.acks.filter(a=>a.v===x.v).map(a=>ROLES[a.role].n.split(" (")[0]).join(", ")||"none"}</div>`).join(""):"<div class='card'>No versions yet.</div>"}`;
+}
+function render(){
+  evalClaims();
+  $("#tabs").innerHTML=[["src","1 Sources ("+S.sources.length+")"],["rev","2 Extract and review ("+S.claims.length+")"],["out","3 Handover"]].map(([k,l])=>`<button data-a="tab" data-i="${k}" class="${S.tab===k?"on":""}">${l}</button>`).join("");
+  $("#app").innerHTML=S.tab==="src"?vSrc():S.tab==="rev"?vRev():vOut();
+  $("#msg").textContent=S.msg||"";save();
+}
+const act={
+  tab:i=>{S.tab=i;S.msg=""},
+  ext:()=>{extract();S.tab="rev";S.msg="Extraction complete. Review each claim and its evidence."},
+  ai:()=>{aiExtract();return 1},
+  reset:()=>{S=SEED();extract()},
+  ok:i=>{byId(i).rs="approved"},no:i=>{byId(i).rs="rejected"},ed:i=>{byId(i).editing=true},
+  save:i=>{const c=byId(i),v=$("#e"+i).value.trim();if(v){c.text=v;c.edited=true;c.rs="approved"}c.editing=false},
+  add:()=>{const n=$("#nn").value.trim()||"Untitled source",t=$("#nt").value;if(!t.trim()){S.msg="Paste some text or choose a file first.";return}
+    S.sources.push(mk("s"+(S.n++),n,"upload",$("#nl").value,t));extract();S.msg="Source added, redacted and extracted."},
+  pub:()=>{const t=new Date().toLocaleString();S.versions.push({v:S.versions.length+1,t,claims:S.claims.filter(c=>c.rs==="approved").map(snap)});S.tab="out";S.msg="Published v"+S.versions.length+". Switch role to see role-based views."},
+  ack:()=>{const v=S.versions[S.versions.length-1];S.acks.push({v:v.v,role:S.role,t:new Date().toLocaleString()})},
+  dl:()=>{(async()=>{const d=typeof claude!=="undefined"?await claude.use("downloads"):null;
+    const R=ROLES[S.role],v=S.versions[S.versions.length-1],all=S.role==="appr"?S.claims.filter(c=>c.rs==="approved").map(snap):(v?v.claims:[]);
+    const fn="relay-handover-"+S.role+".md",data=md(R,all.filter(c=>LV[c.level]<=R.max),S.role==="appr"?null:v);try{if(d)await d.save({filename:fn,data});else{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([data],{type:"text/markdown"}));a.download=fn;a.click()}}catch(e){}})();return 1}
+};
+document.addEventListener("click",e=>{const b=e.target.closest("button[data-a]");if(!b)return;if(act[b.dataset.a](b.dataset.i)!==1)render()});
+document.addEventListener("change",e=>{const t=e.target;
+  if(t.dataset.a==="lvl"){S.sources[+t.dataset.i].level=t.value;render()}
+  else if(t.dataset.a==="role"){S.role=t.value;render()}
+  else if(t.id==="nf"&&t.files[0]){t.files[0].text().then(x=>{$("#nt").value=x;if(!$("#nn").value)$("#nn").value=t.files[0].name})}});
+if(!S||!S.sources){S=SEED();extract()}
+render();
+</script></body></html>
